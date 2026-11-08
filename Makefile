@@ -1,17 +1,24 @@
-CXX ?= g++
-CXXFLAGS ?= -std=c++17 -Wall -Wextra -Wpedantic -pthread
+CXX = g++
+CXXFLAGS = -std=c++17 -Wall -Wextra -pthread -Iinclude
+SRC_DIR = src
+BUILD_DIR = build
+TARGET = kernel_sim
 
-OBJECTS = process_manager.o
+SRCS = $(wildcard $(SRC_DIR)/*.cpp)
+OBJS = $(patsubst $(SRC_DIR)/%.cpp, $(BUILD_DIR)/%.o, $(SRCS))
 
-.PHONY: all clean
+all: $(TARGET)
 
-all: libkernel_base.a
+$(TARGET): $(OBJS)
+	$(CXX) $(CXXFLAGS) -o $@ $^
 
-libkernel_base.a: $(OBJECTS)
-	ar rcs $@ $^
+$(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-process_manager.o: process_manager.cpp process_manager.hpp pcb.hpp
-	$(CXX) $(CXXFLAGS) -c process_manager.cpp -o $@
+$(BUILD_DIR):
+	mkdir -p $(BUILD_DIR)
 
 clean:
-	rm -f $(OBJECTS) libkernel_base.a
+	rm -rf $(BUILD_DIR) $(TARGET)
+
+.PHONY: all clean
