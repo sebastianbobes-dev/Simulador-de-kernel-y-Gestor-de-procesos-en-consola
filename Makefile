@@ -1,17 +1,15 @@
 CXX ?= g++
 CXXFLAGS ?= -std=c++17 -Wall -Wextra -Wpedantic -pthread
+CPPFLAGS ?= -Iinclude
 
-OBJECTS = process_manager.o
+TARGET = simulador
 
 .PHONY: all clean
 
-all: libkernel_base.a
+all: $(TARGET)
 
-libkernel_base.a: $(OBJECTS)
-	ar rcs $@ $^
-
-process_manager.o: process_manager.cpp process_manager.hpp pcb.hpp
-	$(CXX) $(CXXFLAGS) -c process_manager.cpp -o $@
+$(TARGET): src/main.cpp include/pcb.h
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) src/main.cpp -o $@
 
 clean:
-	rm -f $(OBJECTS) libkernel_base.a
+	rm -f $(TARGET)
