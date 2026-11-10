@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <charconv>
+#include <cstdint>
 #include <ctime>
 #include <cstring>
 #include <deque>
@@ -33,6 +34,25 @@ bool parse_integer(const std::string& text, int& value) {
     const char* end = begin + text.size();
     const auto result = std::from_chars(begin, end, value);
     return result.ec == std::errc() && result.ptr == end;
+}
+
+std::string trim(const std::string& text) {
+    const std::size_t first = text.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) return "";
+    const std::size_t last = text.find_last_not_of(" \t\r\n");
+    return text.substr(first, last - first + 1);
+}
+
+std::string format_seconds(std::int64_t milliseconds) {
+    std::string result = std::to_string(milliseconds / 1000);
+    const int fractional_milliseconds =
+        static_cast<int>(milliseconds % 1000);
+    if (fractional_milliseconds != 0) {
+        std::string fraction = std::to_string(1000 + fractional_milliseconds).substr(1);
+        while (fraction.back() == '0') fraction.pop_back();
+        result += "." + fraction;
+    }
+    return result;
 }
 
 bool tokenize(const std::string& line, std::vector<std::string>& tokens) {
@@ -76,9 +96,9 @@ struct TraceProcess {
 
 class Simulator {
 public:
-    Simulator() : next_pid_(1), simulated_time_(0), cpu_ticks_(0),
+    Simulator() : next_pid_(1), clock_ticks_(0), cpu_ticks_(0),
                   running_pid_(-1), quantum_(2), quantum_left_(2),
-                  speed_ms_(500), use_rr_(true), started_(false),
+                  speed_ms_(1000), use_rr_(true), started_(false),
                   running_(false), shutdown_(false), worker_failed_(false) {
         int error = pthread_mutex_init(&mutex_, nullptr);
         if (error != 0) {
@@ -140,7 +160,7 @@ public:
 
     void create_process(const std::string& name, int burst, int priority) {
         MutexGuard guard(mutex_);
-        add_process_locked(name, burst, priority, simulated_time_);
+        add_process_locked(name, burst, priority, clock_ticks_);
         pthread_cond_signal(&condition_);
         std::cout << "Proceso creado con PID " << next_pid_ - 1 << ".\n";
     }
@@ -160,27 +180,49 @@ public:
             const std::size_t first = line.find_first_not_of(" \t\r");
             if (first == std::string::npos || line[first] == '#') continue;
 
-            std::istringstream input(line);
             std::string arrival_text;
             std::string name;
             std::string burst_text;
-            std::string priority_text;
-            std::string extra;
+            std::string priority_text = "3";
             int arrival = 0;
             int burst = 0;
             int priority = 3;
-            bool valid = static_cast<bool>(input >> arrival_text >> name >> burst_text);
-            if (valid && input >> priority_text) {
-                if (input >> extra || !parse_integer(priority_text, priority)) {
+            bool valid = true;
+            if (line.find(',') != std::string::npos) {
+                std::vector<std::string> fields;
+                std::istringstream input(line);
+                std::string field;
+                while (std::getline(input, field, ',')) {
+                    fields.push_back(trim(field));
+                }
+                if (fields.size() != 4 ||
+                    std::count(line.begin(), line.end(), ',') != 3) {
+                    valid = false;
+                } else {
+                    name = fields[0];
+                    burst_text = fields[1];
+                    priority_text = fields[2];
+                    arrival_text = fields[3];
+                }
+            } else {
+                std::istringstream input(line);
+                std::string extra;
+                valid = static_cast<bool>(input >> arrival_text >> name >> burst_text);
+                if (valid && input >> priority_text && input >> extra) {
                     valid = false;
                 }
             }
-            if (!valid || !parse_integer(arrival_text, arrival) ||
-                !parse_integer(burst_text, burst) || arrival < 0 || burst <= 0 ||
+            if (valid) {
+                valid = !name.empty() && parse_integer(arrival_text, arrival) &&
+                        parse_integer(burst_text, burst) &&
+                        parse_integer(priority_text, priority);
+            }
+            if (!valid || arrival < 0 || burst <= 0 ||
                 priority < 1 || priority > 5) {
                 error_message = "Formato inválido en la línea " +
                                 std::to_string(line_number) +
-                                ". Uso: <llegada> <nombre> <burst> [prioridad]";
+                                ". Use CSV: <nombre>, <burst>, <prioridad>, <llegada> "
+                                "o texto: <llegada> <nombre> <burst> [prioridad].";
                 return false;
             }
             trace.push_back({arrival, name, burst, priority});
@@ -223,7 +265,7 @@ public:
 
         const int elapsed = process->state == ProcessState::Terminated
                                 ? process->completion_time - process->arrival_time
-                                : std::max(0, simulated_time_ - process->arrival_time);
+                                : std::max(0, clock_ticks_ - process->arrival_time);
         const int executed = process->initial_burst - process->remaining_burst;
         const int waiting = std::max(0, elapsed - executed);
 
@@ -300,17 +342,24 @@ public:
             std::cout << "El diagrama de Gantt está vacío.\n";
             return;
         }
-        std::cout << "DIAGRAMA DE GANTT (0 - " << simulated_time_ << " ticks):\n";
+        std::cout << "DIAGRAMA DE GANTT (tiempo simulado):\n";
         std::size_t begin = 0;
+        std::int64_t begin_ms = 0;
         while (begin < gantt_.size()) {
             std::size_t end = begin + 1;
-            while (end < gantt_.size() && gantt_[end] == gantt_[begin]) ++end;
-            if (begin != 0) std::cout << " -> ";
-            if (gantt_[begin] < 0) {
-                std::cout << "[IDLE]";
-            } else {
-                std::cout << '[' << begin << '-' << end << "s: P" << gantt_[begin] << ']';
+            std::int64_t end_ms = begin_ms + gantt_tick_duration_ms_[begin];
+            while (end < gantt_.size() && gantt_[end] == gantt_[begin]) {
+                end_ms += gantt_tick_duration_ms_[end];
+                ++end;
             }
+            if (begin != 0) std::cout << " -> ";
+            const PCB* process = gantt_[begin] < 0
+                                     ? nullptr
+                                     : find_process_locked(gantt_[begin]);
+            std::cout << '[' << format_seconds(begin_ms) << '-'
+                      << format_seconds(end_ms) << "s: "
+                      << (process == nullptr ? "IDLE" : process->name) << ']';
+            begin_ms = end_ms;
             begin = end;
         }
         std::cout << '\n';
@@ -349,9 +398,9 @@ public:
                       << "- Tiempo Promedio de Respuesta: "
                       << total_response / completed << " ticks\n";
         }
-        const double utilization = simulated_time_ == 0
+        const double utilization = clock_ticks_ == 0
                                        ? 0.0
-                                       : 100.0 * cpu_ticks_ / simulated_time_;
+                                       : 100.0 * cpu_ticks_ / clock_ticks_;
         std::cout << std::fixed << std::setprecision(1)
                   << "- Uso de CPU : " << utilization << "%\n";
         std::cout.flags(original_flags);
@@ -395,7 +444,7 @@ private:
                             int arrival_time) {
         PCB process{next_pid_++, name, ProcessState::New, arrival_time, burst,
                     burst, priority, -1, -1};
-        if (arrival_time <= simulated_time_) {
+        if (arrival_time <= clock_ticks_) {
             process.state = ProcessState::Ready;
             ready_queue_.push_back(process.pid);
         }
@@ -426,7 +475,7 @@ private:
     void admit_arrivals_locked() {
         for (PCB& process : processes_) {
             if (process.state == ProcessState::New &&
-                process.arrival_time <= simulated_time_) {
+                process.arrival_time <= clock_ticks_) {
                 process.state = ProcessState::Ready;
                 ready_queue_.push_back(process.pid);
             }
@@ -474,7 +523,7 @@ private:
                 PCB* process = find_process_locked(running_pid_);
                 process->state = ProcessState::Running;
                 if (process->first_start_time < 0) {
-                    process->first_start_time = simulated_time_;
+                    process->first_start_time = clock_ticks_;
                 }
                 if (use_rr_) quantum_left_ = quantum_;
             }
@@ -490,7 +539,7 @@ private:
             if (use_rr_) --quantum_left_;
             if (process->remaining_burst == 0) {
                 process->state = ProcessState::Terminated;
-                process->completion_time = simulated_time_ + 1;
+                process->completion_time = clock_ticks_ + 1;
                 running_pid_ = -1;
             } else if (use_rr_ && quantum_left_ == 0) {
                 process->state = ProcessState::Ready;
@@ -498,7 +547,8 @@ private:
                 running_pid_ = -1;
             }
         }
-        ++simulated_time_;
+        gantt_tick_duration_ms_.push_back(speed_ms_);
+        ++clock_ticks_;
     }
 
     static timespec deadline_after(int milliseconds) {
@@ -530,14 +580,14 @@ private:
 
             const timespec deadline = deadline_after(speed_ms_);
             int result = 0;
-            do {
-                result = pthread_cond_timedwait(&condition_, &mutex_, &deadline);
-            } while (result == 0 && !shutdown_ && running_);
+            result = pthread_cond_timedwait(&condition_, &mutex_, &deadline);
 
             if (shutdown_) break;
             if (!running_) continue;
             if (result == ETIMEDOUT) {
                 tick_locked();
+            } else if (result == 0) {
+                continue;
             } else if (result != 0) {
                 worker_failed_ = true;
                 running_ = false;
@@ -554,8 +604,9 @@ private:
     std::vector<PCB> processes_;
     std::deque<int> ready_queue_;
     std::vector<int> gantt_;
+    std::vector<int> gantt_tick_duration_ms_;
     int next_pid_;
-    int simulated_time_;
+    int clock_ticks_;
     int cpu_ticks_;
     int running_pid_;
     int quantum_;
@@ -572,15 +623,16 @@ void print_help() {
     std::cout
         << "Comandos:\n"
         << "  create <nombre> <burst> [prioridad]  Crear proceso (prioridad 1-5, defecto 3)\n"
-        << "  load <archivo>                       Cargar traza: llegada nombre burst [prioridad]\n"
+        << "  load <archivo>                       Cargar CSV: nombre, burst, prioridad, llegada\n"
         << "  ps                                    Listar procesos\n"
         << "  pcb <PID>                             Mostrar detalle del PCB\n"
         << "  set_sched <RR|SRTF> [quantum]         Cambiar planificador (RR defecto: 2)\n"
-        << "  set_speed <ms_por_tick>               Ajustar velocidad (50-5000 ms)\n"
+        << "  set_speed <ms_por_tick>               Ajustar velocidad (50-5000 ms; defecto: 1000)\n"
         << "  start | pause                         Iniciar/reanudar o pausar CPU\n"
         << "  gantt | stats                         Mostrar ejecucion o metricas\n"
         << "  help                                  Mostrar esta ayuda\n"
         << "  exit                                  Cerrar la simulacion\n"
+        << "Tambien se acepta el formato antiguo: llegada nombre burst [prioridad].\n"
         << "En archivos de traza se permiten lineas vacias y comentarios que comiencen con #.\n"
         << "Las rutas con espacios pueden escribirse entre comillas dobles.\n";
 }
