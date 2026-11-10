@@ -9,16 +9,10 @@ OBJS = $(patsubst $(SRC_DIR)/%.cpp, $(BUILD_DIR)/%.o, $(SRCS))
 
 all: $(TARGET)
 
-$(TARGET): $(OBJS)
-	$(CXX) $(CXXFLAGS) -o $@ $^
+all: $(TARGET)
 
-$(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) -c $< -o $@
-
-$(BUILD_DIR):
-	mkdir -p $(BUILD_DIR)
+$(TARGET): src/main.cpp include/pcb.h
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) src/main.cpp -o $@
 
 clean:
-	rm -rf $(BUILD_DIR) $(TARGET)
-
-.PHONY: all clean
+	rm -f $(TARGET)
