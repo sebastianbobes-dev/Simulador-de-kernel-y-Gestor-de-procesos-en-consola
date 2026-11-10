@@ -1,10 +1,13 @@
-CXX ?= g++
-CXXFLAGS ?= -std=c++17 -Wall -Wextra -Wpedantic -pthread
-CPPFLAGS ?= -Iinclude
+CXX = g++
+CXXFLAGS = -std=c++17 -Wall -Wextra -pthread -Iinclude
+SRC_DIR = src
+BUILD_DIR = build
+TARGET = kernel_sim
 
-TARGET = simulador
+SRCS = $(wildcard $(SRC_DIR)/*.cpp)
+OBJS = $(patsubst $(SRC_DIR)/%.cpp, $(BUILD_DIR)/%.o, $(SRCS))
 
-.PHONY: all clean
+all: $(TARGET)
 
 all: $(TARGET)
 
