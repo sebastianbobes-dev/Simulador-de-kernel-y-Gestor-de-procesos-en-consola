@@ -18,6 +18,7 @@
 
 namespace {
 
+    //Convierte un estado del numerador a su representacion en texto
 const char* state_name(ProcessState state) {
     switch (state) {
         case ProcessState::New: return "NEW";
@@ -28,6 +29,7 @@ const char* state_name(ProcessState state) {
     return "DESCONOCIDO";
 }
 
+// Convierte las cadeas de textos a enteros, y devuelve una validacion 
 bool parse_integer(const std::string& text, int& value) {
     if (text.empty()) return false;
     const char* begin = text.data();
@@ -36,6 +38,7 @@ bool parse_integer(const std::string& text, int& value) {
     return result.ec == std::errc() && result.ptr == end;
 }
 
+//convierte milisengundos en una cadena formateada de segundos con decimales
 std::string trim(const std::string& text) {
     const std::size_t first = text.find_first_not_of(" \t\r\n");
     if (first == std::string::npos) return "";
@@ -55,6 +58,8 @@ std::string format_seconds(std::int64_t milliseconds) {
     return result;
 }
 
+
+// Tokeniza una linea de texto en palabras, respetando comillas dobles
 bool tokenize(const std::string& line, std::vector<std::string>& tokens) {
     std::string token;
     bool quoted = false;
@@ -87,6 +92,7 @@ bool tokenize(const std::string& line, std::vector<std::string>& tokens) {
     return true;
 }
 
+//estructura de datos temporar para almacenenar la informaicon de un proceso al leer un archivo de traza
 struct TraceProcess {
     int arrival_time;
     std::string name;
@@ -94,8 +100,12 @@ struct TraceProcess {
     int priority;
 };
 
+
+// Es la clase central que gestiona la simulacion del procesador, colas, hilos POSIX y metricas
 class Simulator {
 public:
+
+    //Constructor de la clase
     Simulator() : next_pid_(1), clock_ticks_(0), cpu_ticks_(0),
                   running_pid_(-1), quantum_(2), quantum_left_(2),
                   speed_ms_(1000), use_rr_(true), started_(false),
@@ -112,7 +122,7 @@ public:
                                      std::string(std::strerror(error)));
         }
     }
-
+    //Destructutor de la clase 
     ~Simulator() {
         if (started_) {
             const int lock_error = pthread_mutex_lock(&mutex_);
@@ -130,6 +140,7 @@ public:
         pthread_mutex_destroy(&mutex_);
     }
 
+    //Creacion del hilo que simula la cpu
     void start_worker() {
         const int error = pthread_create(&cpu_thread_, nullptr, &Simulator::thread_entry, this);
         if (error != 0) {
@@ -139,6 +150,7 @@ public:
         started_ = true;
     }
 
+    //senaliza el apagado seguro del simulador y espera a que el hilo de la cpu termine
     void shutdown_and_join() {
         if (!started_) return;
         {
@@ -158,6 +170,7 @@ public:
         started_ = false;
     }
 
+    //anade procesos manualmente al sistema de forma segura, protegiendolo con el mutex
     void create_process(const std::string& name, int burst, int priority) {
         MutexGuard guard(mutex_);
         add_process_locked(name, burst, priority, clock_ticks_);
@@ -165,6 +178,7 @@ public:
         std::cout << "Proceso creado con PID " << next_pid_ - 1 << ".\n";
     }
 
+    //carga y valida procesos por ltoes desde un archivo txt
     bool load_trace(const std::string& path, std::string& error_message) {
         std::ifstream file(path);
         if (!file) {
@@ -246,6 +260,7 @@ public:
         return true;
     }
 
+    //muestra una tabla con los procesos resgistrados y su estado
     void print_processes() {
         MutexGuard guard(mutex_);
         std::cout << "PID NOMBRE ESTADO BURST RESTANTE PRIORIDAD\n"
@@ -258,6 +273,7 @@ public:
         }
     }
 
+    //muestra la informacion detallada del PCV de un PID en especifico
     bool print_pcb(int pid) {
         MutexGuard guard(mutex_);
         const PCB* process = find_process_locked(pid);
@@ -297,6 +313,8 @@ public:
         return true;
     }
 
+    //setters
+    //para setiar un tipo de planifiacion
     void set_scheduler(bool use_rr, int quantum) {
         MutexGuard guard(mutex_);
         use_rr_ = use_rr;
@@ -310,6 +328,7 @@ public:
         pthread_cond_signal(&condition_);
     }
 
+    //setea la velocidad de la simulacion
     void set_speed(int milliseconds) {
         MutexGuard guard(mutex_);
         speed_ms_ = milliseconds;
@@ -317,6 +336,7 @@ public:
         pthread_cond_signal(&condition_);
     }
 
+    //Reanuda el procesamiento en el hilo de la cepu
     bool start_cpu() {
         MutexGuard guard(mutex_);
         if (worker_failed_) {
@@ -329,6 +349,7 @@ public:
         return true;
     }
 
+    //pausa la ejecuion del hilo de la cpu
     void pause_cpu() {
         MutexGuard guard(mutex_);
         running_ = false;
@@ -336,6 +357,7 @@ public:
         std::cout << "CPU pausada.\n";
     }
 
+    //Imprime el diagrama de Gantt, agrupando los intervalos de ejecucion
     void print_gantt() {
         MutexGuard guard(mutex_);
         if (gantt_.empty()) {
@@ -364,7 +386,8 @@ public:
         }
         std::cout << '\n';
     }
-
+    
+    //calcula e imprime las metricas globales de rendimiento (tp y uso de la cpu)
     void print_stats() {
         MutexGuard guard(mutex_);
         double total_waiting = 0.0;
@@ -407,6 +430,7 @@ public:
         std::cout.precision(original_precision);
     }
 
+// clase auxiliar: implementacion de un patron RAII para bloquear y desbloquear automaticamente el mutex
 private:
     class MutexGuard {
     public:
@@ -430,6 +454,7 @@ private:
         pthread_mutex_t& mutex_;
     };
 
+    // funcion puente para iniciar el ciclo del hilo de la cpu
     static void* thread_entry(void* argument) {
         Simulator* simulator = static_cast<Simulator*>(argument);
         try {
@@ -440,6 +465,7 @@ private:
         return nullptr;
     }
 
+    // intserta un proceso en la estructura interna de la simulacion (asume que el mutex esta bloqueado)
     void add_process_locked(const std::string& name, int burst, int priority,
                             int arrival_time) {
         PCB process{next_pid_++, name, ProcessState::New, arrival_time, burst,
@@ -451,6 +477,7 @@ private:
         processes_.push_back(process);
     }
 
+    //Busca y retorna un punttero al PCV de un proceso dado su PID (version no constante)
     PCB* find_process_locked(int pid) {
         for (PCB& process : processes_) {
             if (process.pid == pid) return &process;
@@ -458,6 +485,7 @@ private:
         return nullptr;
     }
 
+    //Busca y retorna un punttero al PCV de un proceso dado su PID (version constante)
     const PCB* find_process_locked(int pid) const {
         for (const PCB& process : processes_) {
             if (process.pid == pid) return &process;
@@ -465,13 +493,15 @@ private:
         return nullptr;
     }
 
+    //Verifica que no haya procesos que no esten finalizados
     bool has_pending_locked() const {
         return std::any_of(processes_.begin(), processes_.end(),
                            [](const PCB& process) {
                                return process.state != ProcessState::Terminated;
                            });
     }
-
+    
+    //selecciona y extrae el proximo proceso de la cola de listos segun el planiicador
     void admit_arrivals_locked() {
         for (PCB& process : processes_) {
             if (process.state == ProcessState::New &&
@@ -482,6 +512,7 @@ private:
         }
     }
 
+    //selecciona y extrae el proximo proceso de la cola de listos segun el planificador activo
     int take_ready_locked() {
         if (ready_queue_.empty()) return -1;
         auto selected = ready_queue_.begin();
@@ -498,6 +529,7 @@ private:
         return pid;
     }
 
+    //ejecuta un tick para la simulacion
     void tick_locked() {
         admit_arrivals_locked();
 
@@ -551,6 +583,7 @@ private:
         ++clock_ticks_;
     }
 
+    Calcula la marca de tiempo lmite para los retrasos temporizados
     static timespec deadline_after(int milliseconds) {
         timespec deadline{};
         clock_gettime(CLOCK_REALTIME, &deadline);
@@ -563,6 +596,7 @@ private:
         return deadline;
     }
 
+    //bucle principal del hilo de la CPU que maneja las esperas y avanza lis ticks de velocidad establecidos
     void cpu_loop() {
         MutexGuard guard(mutex_);
         while (!shutdown_) {
@@ -597,7 +631,7 @@ private:
             }
         }
     }
-
+    // Variables miembro privadas para la gestión de hilos, procesos, colas y configuración de la simulación.
     pthread_mutex_t mutex_;
     pthread_cond_t condition_;
     pthread_t cpu_thread_{};
@@ -619,6 +653,7 @@ private:
     bool worker_failed_;
 };
 
+//imprime la lista de comandos disponibles
 void print_help() {
     std::cout
         << "Comandos:\n"
@@ -637,6 +672,7 @@ void print_help() {
         << "Las rutas con espacios pueden escribirse entre comillas dobles.\n";
 }
 
+//valida la cantidad de parametros introducidos en un comando de la CLI 
 bool require_count(const std::vector<std::string>& tokens,
                    std::size_t minimum, std::size_t maximum,
                    const std::string& usage) {
@@ -650,6 +686,7 @@ bool require_count(const std::vector<std::string>& tokens,
     return false;
 }
 
+//Bucle interactivo principal de la Interfaz de Línea de Comandos (CLI) que lee y procesa comandos del usuario.
 void run_cli(Simulator& simulator) {
     std::string line;
     bool exit_requested = false;
@@ -760,6 +797,7 @@ void run_cli(Simulator& simulator) {
 
 }  // namespace
 
+//Inicializa el simulador, arranca el hilo de trabajo ye ejecuta la CLI
 int main() {
     try {
         Simulator simulator;
