@@ -583,7 +583,7 @@ private:
         ++clock_ticks_;
     }
 
-    Calcula la marca de tiempo lmite para los retrasos temporizados
+    //Calcula la marca de tiempo lmite para los retrasos temporizados
     static timespec deadline_after(int milliseconds) {
         timespec deadline{};
         clock_gettime(CLOCK_REALTIME, &deadline);
